@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile core/lock.py core/automation.py app.py)",
+      "Bash(python _test_lock.py)",
+      "Bash(rm -f \"d:/Desktop/douyin-spark-main/.test.lock\" \"d:/Desktop/douyin-spark-main/_test_lock.py\")"
+    ]
+  }
+}

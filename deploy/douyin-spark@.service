@@ -1,0 +1,19 @@
+[Unit]
+Description=Douyin Spark Keeper（账号实例 %i）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__DIR__
+ExecStart=__VENV__/bin/python app.py
+Environment=PYTHONUNBUFFERED=1
+# %i 为实例名（systemctl enable douyin-spark@1 中的 1），自动落到各自数据目录
+Environment=DATA_DIR=__DATA_BASE__/%i
+# 前导 - 表示文件不存在也不报错；文件里放 PORT 和 AUTH_TOKEN
+EnvironmentFile=-__ENV_DIR__/%i.env
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

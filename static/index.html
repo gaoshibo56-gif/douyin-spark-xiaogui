@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>抖音续火花助手（多账号）</title>
+  <link rel="stylesheet" href="/static/vendor/element-plus.css" />
+  <style>
+    body { margin: 0; background: #f5f7fa; }
+    .page { max-width: 1200px; margin: 0 auto; padding: 16px; }
+    .header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+    .header h1 { font-size: 20px; margin: 0 8px 0 0; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .cards .el-card { --el-card-padding: 14px; }
+    .card-label { color: #909399; font-size: 12px; margin-bottom: 6px; }
+    .card-value { font-size: 18px; font-weight: 600; }
+    .log-pre { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 6px; height: 420px; overflow: auto; font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+    .result-box { margin-top: 12px; }
+    .spacer { flex: 1; }
+    .upload-box { border: 1px dashed #dcdfe6; border-radius: 6px; padding: 14px; background: #fafafa; margin-bottom: 14px; }
+    .hint { color: #909399; font-size: 12px; }
+    .mono { font-family: Consolas, Menlo, monospace; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="page">
+      <div class="header">
+        <h1>🔥 抖音续火花助手</h1>
+        <el-tag type="info">账号 {{ status.account_count || 0 }} 个 / 启用 {{ status.enabled_count || 0 }} 个</el-tag>
+        <el-tag v-if="status.session_status === 'ok'" type="success">登录正常</el-tag>
+        <el-tag v-else-if="status.session_status === 'expired'" type="danger">有账号登录态已过期</el-tag>
+        <el-tag v-else-if="status.session_status === 'partial'" type="warning">部分发送成功</el-tag>
+        <el-tag v-else-if="status.session_status === 'failed'" type="danger">发送失败</el-tag>
+        <el-tag v-else type="info">状态未知</el-tag>
+        <el-tag v-if="status.running" type="warning">运行中：{{ (status.running_accounts || []).join('、') }}</el-tag>
+        <div class="spacer"></div>
+        <el-button size="small" @click="loadAll">刷新</el-button>
+        <el-button size="small" @click="showTokenDialog">令牌</el-button>
+      </div>
+
+      <el-tabs v-model="tab">
+        <!-- ================= 账号管理 ================= -->
+        <el-tab-pane label="账号管理" name="accounts">
+          <el-card shadow="never" style="margin-bottom:14px;">
+            <template #header>
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <b>上传登录态文件</b>
+                <span class="hint">可一次选择多个账号的 state.json（Playwright 导出的登录态），文件名会成为账号名</span>
+              </div>
+            </template>
+            <div class="upload-box">
+              <el-upload
+                ref="uploadRef"
+                :auto-upload="false"
+                multiple
+                accept=".json"
+                :on-change="onFilesChange"
+                :on-remove="onFilesRemove"
+                drag
+                style="width:100%;">
+                <div style="padding:10px 0;">
+                  <div style="font-size:15px;">把登录态 .json 文件拖到这里，或<em>点击选择多个文件</em></div>
+                  <div class="hint" style="margin-top:6px;">
+                    本机运行 <span class="mono">python extract_cookie.py 1</span> / <span class="mono">2</span> … 可分别导出
+                    <span class="mono">state_1.json</span>、<span class="mono">state_2.json</span>，一起拖进来即可
+                  </div>
+                </div>
+              </el-upload>
+            </div>
+            <el-form inline>
+              <el-form-item label="账号名（可选）">
+                <el-input v-model="uploadIds" placeholder="逗号分隔，与文件顺序一一对应；留空则用文件名" style="width:420px;" />
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" :disabled="!uploadFiles.length" :loading="uploading" @click="uploadStates">
+                  上传 {{ uploadFiles.length || '' }} 个文件
+                </el-button>
+                <el-button :disabled="!uploadFiles.length" @click="clearFiles">清空选择</el-button>
+              </el-form-item>
+            </el-form>
+
+            <div v-if="uploadResults.length" style="margin-top:6px;">
+              <el-divider content-position="left">上传结果</el-divider>
+              <div v-for="(r, i) in uploadResults" :key="i" style="margin:4px 0;">
+                <el-tag :type="r.ok ? 'success' : 'danger'" size="small">{{ r.ok ? '成功' : '失败' }}</el-tag>
+                <span class="mono" style="margin-left:8px;">{{ r.filename }}</span>
+                <span class="hint" style="margin-left:8px;">{{ r.message }}</span>
+              </div>
+            </div>
+          </el-card>
+
+          <el-card shadow="never">
+            <template #header>
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <b>账号列表</b>
+                <span class="hint">每个账号的好友名单、发送时间与间隔都互相独立</span>
+                <div class="spacer"></div>
+                <el-button type="primary" size="small" :loading="status.running"
+                  @click="runAll(false)" :disabled="!status.enabled_count">立即发送全部启用账号</el-button>
+                <el-button size="small" :loading="status.running" @click="runAll(true)" :disabled="!status.enabled_count">
+                  干跑测试（不真实发送）
+                </el-button>
+              </div>
+            </template>
+
+            <el-table :data="status.accounts || []" stripe style="width:100%;">
+              <el-table-column label="账号" min-width="150">
+                <template #default="{ row }">
+                  <div style="font-weight:600;">{{ row.label }}</div>
+                  <div class="hint mono">{{ row.account }}</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="登录态" width="120">
+                <template #default="{ row }">
+                  <el-tag v-if="!row.state_file_exists" type="info" size="small">未上传</el-tag>
+                  <el-tag v-else-if="row.session_status === 'expired'" type="danger" size="small">已过期</el-tag>
+                  <el-tag v-else-if="row.session_status === 'failed'" type="danger" size="small">发送失败</el-tag>
+                  <el-tag v-else-if="row.session_status === 'partial'" type="warning" size="small">部分成功</el-tag>
+                  <el-tag v-else-if="row.session_status === 'ok'" type="success" size="small">正常</el-tag>
+                  <el-tag v-else type="info" size="small">待验证</el-tag>
+                  <div class="hint">{{ fmt(row.uploaded_at) }}</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="启用" width="80">
+                <template #default="{ row }">
+                  <el-switch :model-value="row.enabled" @change="(v) => toggleEnabled(row, v)" />
+                </template>
+              </el-table-column>
+              <el-table-column label="发送时刻" width="190">
+                <template #default="{ row }">
+                  <div>每天 {{ row.send_time }}
+                    <el-tag v-if="row.offset_minutes" size="small" type="warning" style="margin-left:4px;">
+                      {{ row.offset_minutes > 0 ? '+' : '' }}{{ row.offset_minutes }} 分
+                    </el-tag>
+                  </div>
+                  <div class="hint">下次：{{ fmt(row.next_run) || '未安排' }}</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="好友" width="80">
+                <template #default="{ row }">
+                  <span>{{ row.friends_count }} 人</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="上次执行" min-width="200">
+                <template #default="{ row }">
+                  <template v-if="row.last_run">
+                    <div class="hint">{{ fmt(row.last_run.at) }}<span v-if="row.last_run.dry_run"> · 干跑</span></div>
+                    <div>
+                      <el-tag size="small" type="success">成功 {{ (row.last_run.ok || []).length }}</el-tag>
+                      <el-tag size="small" type="danger" style="margin-left:4px;">失败 {{ (row.last_run.failed || []).length }}</el-tag>
+                      <el-tag v-if="row.last_run.skipped" size="small" type="info" style="margin-left:4px;">未配置好友</el-tag>
+                    </div>
+                  </template>
+                  <span v-else class="hint">还没有执行记录</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="290" fixed="right">
+                <template #default="{ row }">
+                  <el-button size="small" @click="openAccountDialog(row)">配置</el-button>
+                  <el-button size="small" :loading="row.fetching" @click="fetchContacts(row)">读好友</el-button>
+                  <el-button size="small" type="primary" :loading="status.running" @click="runOne(row, false)">发送</el-button>
+                  <el-button size="small" type="danger" plain @click="removeAccount(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <el-empty v-if="!(status.accounts || []).length" description="还没有账号，先在上面上传登录态文件" />
+
+            <div v-if="status.last_run" class="result-box">
+              <el-divider content-position="left">
+                最近一次执行（{{ fmt(status.last_run.at) }}<template v-if="status.last_run.dry_run">，干跑</template>）
+              </el-divider>
+              <div v-for="run in lastRuns" :key="run.account" style="margin-bottom:10px;">
+                <b>{{ run.label || run.account }}</b>
+                <div style="margin:4px 0 4px 12px;">
+                  <span style="color:#67c23a;">成功 {{ (run.ok || []).length }} 人：</span>
+                  <el-tag v-for="n in (run.ok || [])" :key="n" size="small" type="success" style="margin:2px;">{{ n }}</el-tag>
+                  <span v-if="!(run.ok || []).length" class="hint">—</span>
+                </div>
+                <div style="margin-left:12px;">
+                  <span style="color:#f56c6c;">失败 {{ (run.failed || []).length }} 人：</span>
+                  <el-tooltip v-for="f in (run.failed || [])" :key="f.name" :content="f.reason" placement="top">
+                    <el-tag size="small" type="danger" style="margin:2px;">{{ f.name }}</el-tag>
+                  </el-tooltip>
+                  <span v-if="!(run.failed || []).length" class="hint">—</span>
+                </div>
+                <el-alert v-if="run.logged_out" type="error" :closable="false" style="margin-top:6px;"
+                  :title="'「' + (run.label || run.account) + '」登录态已过期：请在电脑上重新运行 extract_cookie.py 后重新上传该账号的登录态'"></el-alert>
+                <el-alert v-else-if="run.rate_limited" type="warning" :closable="false" style="margin-top:6px;"
+                  title="疑似触发抖音限流：该账号本轮已停止，稍后会按配置自动补发"></el-alert>
+              </div>
+            </div>
+          </el-card>
+        </el-tab-pane>
+
+        <!-- ================= 定时设置 ================= -->
+        <el-tab-pane label="定时设置" name="settings">
+          <el-card shadow="never" style="margin-bottom:14px;">
+            <template #header><b>全局基准</b></template>
+            <el-form label-width="170px">
+              <el-form-item label="每天基准发送时间">
+                <el-input v-model="settingsForm.schedule_time" type="time" style="width:160px;"></el-input>
+                <span class="hint" style="margin-left:8px;">各账号在此时间上叠加自己的偏移，实现分时发送</span>
+              </el-form-item>
+              <el-form-item label="默认抖动窗口（分钟）">
+                <el-input-number v-model="settingsForm.jitter_minutes" :min="0" :max="240"></el-input-number>
+                <span class="hint" style="margin-left:8px;">实际发送时间 = 基准时间 + 账号偏移 + 0～N 分钟随机</span>
+              </el-form-item>
+              <el-form-item label="默认好友间隔（秒）">
+                <el-input-number v-model="settingsForm.send_gap_min" :min="1" :max="600"></el-input-number>
+                <span style="margin:0 6px;">至</span>
+                <el-input-number v-model="settingsForm.send_gap_max" :min="1" :max="600"></el-input-number>
+                <span class="hint" style="margin-left:8px;">同一个账号内相邻两个好友之间的随机间隔</span>
+              </el-form-item>
+              <el-form-item label="默认每次最多发送人数">
+                <el-input-number v-model="settingsForm.max_friends_per_run" :min="0" :max="500"></el-input-number>
+                <span class="hint" style="margin-left:8px;">0 表示不限制</span>
+              </el-form-item>
+              <el-form-item label="默认消息模板">
+                <el-input v-model="messagesText" type="textarea" :rows="4"
+                  placeholder="每行一条，每次随机选择一条发送；单个账号可在「配置」里覆盖"></el-input>
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" @click="saveSettings">保存全局设置</el-button>
+              </el-form-item>
+            </el-form>
+          </el-card>
+
+          <el-card shadow="never">
+            <template #header>
+              <div style="display:flex; align-items:center; gap:10px;">
+                <b>分时发送时间表</b>
+                <span class="hint">同一时刻只会有一个账号在跑浏览器（文件锁串行排队），重叠也不会同时发送</span>
+              </div>
+            </template>
+            <el-table :data="status.accounts || []" size="small" stripe>
+              <el-table-column label="账号" min-width="150">
+                <template #default="{ row }">{{ row.label }} <span class="hint mono">{{ row.account }}</span></template>
+              </el-table-column>
+              <el-table-column label="偏移（分钟）" width="120" prop="offset_minutes"></el-table-column>
+              <el-table-column label="发送时刻" width="120" prop="send_time"></el-table-column>
+              <el-table-column label="抖动窗口" width="110">
+                <template #default="{ row }">{{ row.jitter_minutes }} 分钟</template>
+              </el-table-column>
+              <el-table-column label="好友间隔" width="130">
+                <template #default="{ row }">{{ row.gap_min }}～{{ row.gap_max }} 秒</template>
+              </el-table-column>
+              <el-table-column label="状态" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '启用' : '停用' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="下次执行" min-width="180">
+                <template #default="{ row }">{{ fmt(row.next_run) || '未安排' }}</template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+        </el-tab-pane>
+
+        <!-- ================= 日志 ================= -->
+        <el-tab-pane label="日志" name="logs">
+          <el-card shadow="never">
+            <div style="display:flex; gap:8px; margin-bottom:10px; align-items:center; flex-wrap:wrap;">
+              <el-select v-model="logAccount" placeholder="全部账号" clearable style="width:220px;" @change="loadLogs">
+                <el-option v-for="a in (status.accounts || [])" :key="a.account"
+                  :label="a.label + '（' + a.account + '）'" :value="a.account" />
+              </el-select>
+              <el-button size="small" @click="loadLogs">刷新日志</el-button>
+              <el-checkbox v-model="autoRefresh">自动刷新</el-checkbox>
+            </div>
+            <pre class="log-pre">{{ logs || '暂无日志' }}</pre>
+          </el-card>
+        </el-tab-pane>
+      </el-tabs>
+    </div>
+
+    <!-- ================= 账号配置弹窗 ================= -->
+    <el-dialog v-model="accountDialog" :title="'账号配置：' + (form.label || form.account)" width="760px" top="6vh">
+      <el-form label-width="150px">
+        <el-form-item label="账号ID">
+          <span class="mono">{{ form.account }}</span>
+          <span class="hint" style="margin-left:10px;">
+            登录态文件：{{ form.state_file_exists ? '已上传（' + form.state_size + ' 字节）' : '未上传' }}
+          </span>
+        </el-form-item>
+        <el-form-item label="显示名">
+          <el-input v-model="form.label" style="width:280px;" placeholder="用于界面和日志显示"></el-input>
+        </el-form-item>
+        <el-form-item label="参与定时发送">
+          <el-switch v-model="form.enabled"></el-switch>
+        </el-form-item>
+        <el-form-item label="发送时间偏移">
+          <el-input-number v-model="form.offset_minutes" :min="-1440" :max="1440" :step="5"></el-input-number>
+          <span class="hint" style="margin-left:8px;">
+            分钟。基准 {{ globalCfg.schedule_time }} {{ form.offset_minutes >= 0 ? '+' : '-' }}
+            {{ Math.abs(form.offset_minutes) }} 分 = <b>{{ previewTime }}</b>
+          </span>
+        </el-form-item>
+        <el-form-item label="抖动窗口（分钟）">
+          <el-input-number v-model="form.jitter_override" :min="0" :max="240"
+            :placeholder="'默认 ' + globalCfg.jitter_minutes"></el-input-number>
+          <span class="hint" style="margin-left:8px;">留空则用全局默认（{{ globalCfg.jitter_minutes }} 分钟）</span>
+        </el-form-item>
+        <el-form-item label="好友间隔（秒）">
+          <el-input-number v-model="form.gap_min_override" :min="1" :max="600" :placeholder="'默认 ' + globalCfg.send_gap_min"></el-input-number>
+          <span style="margin:0 6px;">至</span>
+          <el-input-number v-model="form.gap_max_override" :min="1" :max="600" :placeholder="'默认 ' + globalCfg.send_gap_max"></el-input-number>
+          <span class="hint" style="margin-left:8px;">同一个账号内好友之间的间隔</span>
+        </el-form-item>
+        <el-form-item label="每次最多发送人数">
+          <el-input-number v-model="form.max_friends_override" :min="0" :max="500"
+            :placeholder="'默认 ' + globalCfg.max_friends_per_run"></el-input-number>
+          <span class="hint" style="margin-left:8px;">0 表示不限制；留空用全局默认</span>
+        </el-form-item>
+        <el-form-item label="消息模板">
+          <el-input v-model="form.messagesText" type="textarea" :rows="3"
+            placeholder="每行一条；留空则使用全局默认消息模板"></el-input>
+        </el-form-item>
+
+        <el-form-item label="续火花好友">
+          <div style="width:100%;">
+            <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
+              <el-button size="small" type="primary" :loading="form.fetching" @click="fetchContactsForForm">
+                获取聊天列表
+              </el-button>
+              <span class="hint">
+                <template v-if="form.contacts && form.contacts.length">
+                  共 {{ form.contacts.length }} 个聊天对象，最后更新 {{ fmt(form.contacts_at) }}
+                </template>
+                <template v-else-if="form.contacts_error">获取失败：{{ form.contacts_error }}</template>
+                <template v-else>从抖音聊天列表读取好友，勾选即可</template>
+              </span>
+            </div>
+            <div v-if="form.contacts && form.contacts.length"
+              style="max-height:200px; overflow:auto; border:1px solid #ebeef5; border-radius:6px; padding:8px 12px; margin-bottom:8px;">
+              <el-checkbox-group v-model="form.selectedFriends">
+                <el-checkbox v-for="c in form.contacts" :key="c.name" :label="c.name" style="margin:4px 18px 4px 0;">
+                  {{ c.name }}<el-tag v-if="c.streak" size="small" type="warning" style="margin-left:6px;">🔥 {{ c.streak }}</el-tag>
+                </el-checkbox>
+              </el-checkbox-group>
+            </div>
+            <el-input v-model="form.friendsText" type="textarea" :rows="4"
+              placeholder="每行一个；可直接手动填写聊天列表里显示的备注 / 昵称 / 抖音号"></el-input>
+            <div style="margin-top:6px;">
+              <el-button size="small" @click="applySelectionForForm">把勾选结果写入名单</el-button>
+            </div>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="accountDialog = false">取消</el-button>
+        <el-button type="primary" :loading="savingAccount" @click="saveAccount">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="tokenDialog" title="访问令牌" width="360px" :close-on-click-modal="false" :show-close="false">
+      <p style="margin-top:0;color:#606266;font-size:13px;">请输入部署时生成的访问令牌（保存在服务器 .env 文件中）。</p>
+      <el-input v-model="tokenInput" placeholder="访问令牌" show-password @keyup.enter="saveToken"></el-input>
+      <template #footer>
+        <el-button type="primary" @click="saveToken">确定</el-button>
+      </template>
+    </el-dialog>
+  </div>
+
+  <script src="/static/vendor/vue.global.prod.js"></script>
+  <script src="/static/vendor/element-plus.full.min.js"></script>
+  <script src="/static/vendor/axios.min.js"></script>
+  <script>
+    const { createApp, ref, reactive, computed, onMounted, onUnmounted } = Vue;
+
+    createApp({
+      setup() {
+        const tab = ref('accounts');
+        const token = ref(localStorage.getItem('ds_token') || '');
+        const tokenInput = ref('');
+        const tokenDialog = ref(false);
+        const status = reactive({
+          running: false, running_accounts: [], session_status: 'unknown', next_run: null,
+          auth_required: true, accounts: [], account_count: 0, enabled_count: 0, last_run: null,
+        });
+        const globalCfg = reactive({ schedule_time: '21:00', jitter_minutes: 30, send_gap_min: 6, send_gap_max: 12, max_friends_per_run: 20 });
+        const settingsForm = reactive({ schedule_time: '21:00', jitter_minutes: 30, send_gap_min: 6, send_gap_max: 12, max_friends_per_run: 20 });
+        const messagesText = ref('');
+        const logs = ref('');
+        const logAccount = ref('');
+        const autoRefresh = ref(false);
+        const uploadRef = ref(null);
+        const uploadFiles = ref([]);
+        const uploadIds = ref('');
+        const uploading = ref(false);
+        const uploadResults = ref([]);
+        const accountDialog = ref(false);
+        const savingAccount = ref(false);
+        const form = reactive({
+          account: '', label: '', enabled: true, offset_minutes: 0,
+          jitter_override: null, gap_min_override: null, gap_max_override: null, max_friends_override: null,
+          messagesText: '', friendsText: '', selectedFriends: [], contacts: [], contacts_at: '', contacts_error: '',
+          fetching: false, state_file_exists: false, state_size: 0,
+        });
+        let timer = null;
+
+        const api = axios.create({ baseURL: '/api', timeout: 900000 });
+        api.interceptors.request.use((cfg) => {
+          if (token.value) cfg.headers['X-Auth-Token'] = token.value;
+          return cfg;
+        });
+        api.interceptors.response.use(
+          (r) => r,
+          (err) => {
+            if (err.response && err.response.status === 401) tokenDialog.value = true;
+            return Promise.reject(err);
+          }
+        );
+
+        function showTokenDialog() { tokenInput.value = token.value; tokenDialog.value = true; }
+        function saveToken() {
+          token.value = tokenInput.value.trim();
+          localStorage.setItem('ds_token', token.value);
+          tokenDialog.value = false;
+          loadAll();
+        }
+        function fmt(iso) {
+          if (!iso) return '';
+          const d = new Date(iso);
+          return isNaN(d) ? iso : d.toLocaleString('zh-CN', { hour12: false });
+        }
+        function errMsg(e, fallback) { return e.response?.data?.detail || fallback; }
+
+        const lastRuns = computed(() => {
+          const lr = status.last_run;
+          if (!lr) return [];
+          if (Array.isArray(lr.runs)) return lr.runs;
+          return [lr];
+        });
+        const previewTime = computed(() => {
+          const parts = String(globalCfg.schedule_time || '21:00').split(':');
+          let total = (parseInt(parts[0], 10) || 0) * 60 + (parseInt(parts[1], 10) || 0) + (parseInt(form.offset_minutes, 10) || 0);
+          total = ((total % 1440) + 1440) % 1440;
+          const hh = String(Math.floor(total / 60)).padStart(2, '0');
+          const mm = String(total % 60).padStart(2, '0');
+          return hh + ':' + mm;
+        });
+
+        async function loadStatus() {
+          try {
+            const r = await api.get('/status');
+            Object.assign(status, r.data);
+            if (r.data.auth_required && !token.value) tokenDialog.value = true;
+          } catch (e) { /* 401 由拦截器处理 */ }
+        }
+        async function loadConfig() {
+          try {
+            const r = await api.get('/config');
+            Object.assign(globalCfg, r.data);
+            Object.assign(settingsForm, {
+              schedule_time: r.data.schedule_time, jitter_minutes: r.data.jitter_minutes,
+              send_gap_min: r.data.send_gap_min, send_gap_max: r.data.send_gap_max,
+              max_friends_per_run: r.data.max_friends_per_run,
+            });
+            messagesText.value = (r.data.messages || []).join('\n');
+          } catch (e) { /* handled */ }
+        }
+        async function loadLogs() {
+          try {
+            const r = await api.get('/logs', { params: { account: logAccount.value || undefined } });
+            logs.value = r.data.logs;
+          } catch (e) { /* handled */ }
+        }
+        async function loadAll() { await loadStatus(); await loadConfig(); await loadLogs(); }
+
+        /* ---------------- 上传 ---------------- */
+        function onFilesChange(_file, fileList) { uploadFiles.value = fileList || []; }
+        function onFilesRemove(_file, fileList) { uploadFiles.value = fileList || []; }
+        function clearFiles() {
+          uploadFiles.value = [];
+          uploadResults.value = [];
+          if (uploadRef.value) uploadRef.value.clearFiles();
+        }
+        async function uploadStates() {
+          if (!uploadFiles.value.length) return;
+          const fd = new FormData();
+          uploadFiles.value.forEach((f) => fd.append('files', f.raw, f.name));
+          if (uploadIds.value.trim()) fd.append('ids', uploadIds.value.trim());
+          uploading.value = true;
+          uploadResults.value = [];
+          try {
+            await api.post('/upload-states', fd);
+            ElementPlus.ElMessage.info('已开始处理 ' + uploadFiles.value.length + ' 个文件…');
+            for (let i = 0; i < 60; i++) {
+              await new Promise((r) => setTimeout(r, 1500));
+              await loadStatus();
+              const job = status.upload || {};
+              if (!job.running && (job.results || []).length) {
+                uploadResults.value = job.results;
+                const ok = job.results.filter((x) => x.ok).length;
+                ElementPlus.ElMessage[job.results.length === ok ? 'success' : 'warning'](
+                  '处理完成：成功 ' + ok + ' 个，失败 ' + (job.results.length - ok) + ' 个');
+                break;
+              }
+            }
+            clearFiles();
+            uploadIds.value = '';
+            await loadAll();
+          } catch (e) {
+            ElementPlus.ElMessage.error(errMsg(e, '上传失败'));
+          } finally {
+            uploading.value = false;
+          }
+        }
+
+        /* ---------------- 账号操作 ---------------- */
+        async function toggleEnabled(row, value) {
+          try {
+            const fd = new FormData();
+            fd.append('enabled', value ? 'true' : 'false');
+            await api.post('/accounts/' + encodeURIComponent(row.account) + '/enabled', fd);
+            row.enabled = value;
+            await loadStatus();
+            ElementPlus.ElMessage.success('「' + row.label + '」已' + (value ? '启用' : '停用'));
+          } catch (e) {
+            ElementPlus.ElMessage.error(errMsg(e, '设置失败'));
+            await loadStatus();
+          }
+        }
+        function runAll(dry) {
+          if (!status.enabled_count) { ElementPlus.ElMessage.warning('没有启用的账号'); return; }
+          triggerRun({ dry, accounts: [] }, dry ? '干跑测试已启动（按账号偏移依次执行）' : '已排队：将按各账号的发送时刻依次发送');
+        }
+        function runOne(row, dry) {
+          triggerRun({ dry, accounts: [row.account] }, dry ? '干跑测试已启动' : '「' + row.label + '」发送任务已启动');
+        }
+        async function triggerRun(payload, tip) {
+          try {
+            const r = await api.post('/run', payload);
+            if (r.data.started) {
+              ElementPlus.ElMessage.info(tip);
+              await loadStatus();
+              await waitForRunFinish(3600);
+              await loadLogs();
+            }
+          } catch (e) {
+            ElementPlus.ElMessage.error(errMsg(e, '启动失败'));
+          }
+        }
+        async function waitForRunFinish(maxSeconds) {
+          const start = Date.now();
+          while (Date.now() - start < maxSeconds * 1000) {
+            await new Promise((r) => setTimeout(r, 5000));
+            await loadStatus();
+            if (!status.running) return;
+          }
+          ElementPlus.ElMessage.warning('等待超时，任务可能仍在后台运行');
+        }
+        async function removeAccount(row) {
+          try {
+            await ElementPlus.ElMessageBox.confirm(
+              '删除账号「' + row.label + '」会同时删除它的登录态文件、好友名单与历史记录，确定吗？',
+              '删除账号', { type: 'warning' });
+          } catch (e) { return; }
+          try {
+            await api.delete('/accounts/' + encodeURIComponent(row.account));
+            ElementPlus.ElMessage.success('已删除');
+            await loadAll();
+          } catch (e) {
+            ElementPlus.ElMessage.error(errMsg(e, '删除失败'));
+          }
+        }
+        async function fetchContacts(row) {
+          try {
+            const fd = new FormData();
+            fd.append('account', row.account);
+            await api.post('/contacts/fetch', fd);
+            ElementPlus.ElMessage.info('正在读取「' + row.label + '」的聊天列表，约需半分钟…');
+            for (let i = 0; i < 80; i++) {
+              await new Promise((r) => setTimeout(r, 3000));
+              await loadStatus();
+              const cur = (status.accounts || []).find((a) => a.account === row.account);
+              if (cur && !cur.fetching) break;
+            }
+            await loadStatus();
+            ElementPlus.ElMessage.success('聊天列表读取完成');
+          } catch (e) {
+            ElementPlus.ElMessage.error(errMsg(e, '获取失败'));
+          }
+        }
+
+        /* ---------------- 账号配置弹窗 ---------------- */
+        function openAccountDialog(row) {
+          Object.assign(form, {
+            account: row.account,
+            label: row.label,
+            enabled: row.enabled,
+            offset_minutes: row.offset_minutes,
+            jitter_override: row.jitter_override,
+            gap_min_override: row.gap_min_override,
+            gap_max_override: row.gap_max_override,
+            max_friends_override: row.max_friends_override,
+            messagesText: (row.messages || []).join('\n'),
+            friendsText: (row.friends || []).join('\n'),
+            selectedFriends: (row.friends || []).slice(),
+            contacts: row.contacts || [],
+            contacts_at: row.contacts_at || '',
+            contacts_error: row.contacts_error || '',
+            fetching: !!row.fetching,
+            state_file_exists: row.state_file_exists,
+            state_size: row.state_size,
+          });
+          accountDialog.value = true;
+        }
+        function applySelectionForForm() {
+          form.friendsText = form.selectedFriends.join('\n');
+          ElementPlus.ElMessage.success('已把勾选结果写入名单，记得点「保存」');
+        }
+        async function fetchContactsForForm() {
+          try {
+            const fd = new FormData();
+            fd.append('account', form.account);
+            await api.post('/contacts/fetch', fd);
+            form.fetching = true;
+            ElementPlus.ElMessage.info('正在读取聊天列表，约需半分钟…');
+            for (let i = 0; i < 80; i++) {
+              await new Promise((r) => setTimeout(r, 3000));
+              const r = await api.get('/contacts', { params: { account: form.account } });
+              form.contacts = r.data.contacts || [];
+              form.contacts_at = r.data.contacts_at || '';
+              form.contacts_error = r.data.contacts_error || '';
+              form.fetching = !!r.data.fetching;
+              if (!form.fetching) break;
+            }
+          } catch (e) {
+            form.fetching = false;
+            ElementPlus.ElMessage.error(errMsg(e, '获取失败'));
+          }
+        }
+        async function saveAccount() {
+          savingAccount.value = true;
+          const patch = {
+            label: form.label,
+            enabled: form.enabled,
+            offset_minutes: form.offset_minutes,
+            jitter_minutes: form.jitter_override === null || form.jitter_override === undefined ? null : Number(form.jitter_override),
+            send_gap_min: form.gap_min_override === null || form.gap_min_override === undefined ? null : Number(form.gap_min_override),
+            send_gap_max: form.gap_max_override === null || form.gap_max_override === undefined ? null : Number(form.gap_max_override),
+            max_friends_per_run: form.max_friends_override === null || form.max_friends_override === undefined ? null : Number(form.max_friends_override),
+            messages: form.messagesText.split('\n').map((s) => s.trim()).filter(Boolean),
+            friends: form.friendsText.split('\n').map((s) => s.trim()).filter(Boolean),
+          };
+          try {
+            await api.put('/accounts/' + encodeURIComponent(form.account), { account: patch });
+            ElementPlus.ElMessage.success('账号配置已保存');
+            accountDialog.value = false;
+            await loadAll();
+          } catch (e) {
+            ElementPlus.ElMessage.error(errMsg(e, '保存失败'));
+          } finally {
+            savingAccount.value = false;
+          }
+        }
+
+        /* ---------------- 全局设置 ---------------- */
+        async function saveSettings() {
+          try {
+            await api.put('/config', {
+              config: Object.assign({}, globalCfg, settingsForm, {
+                messages: messagesText.value.split('\n').map((s) => s.trim()).filter(Boolean),
+              }),
+            });
+            await loadAll();
+            ElementPlus.ElMessage.success('全局设置已保存');
+          } catch (e) {
+            ElementPlus.ElMessage.error(errMsg(e, '保存失败'));
+          }
+        }
+
+        onMounted(async () => {
+          await loadAll();
+          timer = setInterval(() => {
+            loadStatus();
+            if (autoRefresh.value) loadLogs();
+          }, 20000);
+        });
+        onUnmounted(() => { if (timer) clearInterval(timer); });
+
+        return {
+          tab, status, globalCfg, settingsForm, messagesText, logs, logAccount, autoRefresh,
+          uploadRef, uploadFiles, uploadIds, uploading, uploadResults,
+          accountDialog, savingAccount, form, lastRuns, previewTime,
+          tokenDialog, tokenInput,
+          fmt, loadAll, loadLogs, showTokenDialog, saveToken,
+          onFilesChange, onFilesRemove, clearFiles, uploadStates,
+          toggleEnabled, runAll, runOne, removeAccount, fetchContacts,
+          openAccountDialog, applySelectionForForm, fetchContactsForForm, saveAccount, saveSettings,
+        };
+      },
+    }).use(ElementPlus).mount('#app');
+  </script>
+</body>
+</html>
