@@ -1,0 +1,26 @@
+{
+  "schedule": {
+    "base_time": "21:00",
+    "jitter_minutes": 0,
+    "max_stagger_minutes": 60
+  },
+  "defaults": {
+    "send_gap_min": 6,
+    "send_gap_max": 12,
+    "max_friends_per_run": 20,
+    "messages": ["🔥 续火花"]
+  },
+  "accounts": {
+    "demo": {
+      "label": "示例账号",
+      "enabled": true,
+      "offset_minutes": 0,
+      "state_file": "demo.json",
+      "friends": ["好友A", "好友B"],
+      "messages": ["🔥 续火花"],
+      "send_gap_min": 6,
+      "send_gap_max": 12,
+      "max_friends_per_run": 20
+    }
+  }
+}

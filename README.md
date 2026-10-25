@@ -93,6 +93,52 @@ sudo bash deploy/deploy.sh
 
 > 💡 **多账号分时**：在「账号管理」里给不同账号设置不同的偏移（如账号 A +0 分、账号 B +20 分、账号 C +40 分），它们会在各自时刻依次发送；浏览器任务由文件锁严格串行，不会同时跑多个 Chromium。若想全部同时开始，把所有账号的偏移都设为 0，系统仍会按队列一个接一个发送。
 
+## 免服务器运行：GitHub Actions 定时任务
+
+如果你不想买服务器，可以把本项目挂在 **GitHub Actions** 上，每天定时自动运行，不花钱（GitHub 私有仓库每月 2000 分钟免费额度，个人自用绰绰有余）。
+
+> ⚠️ **重要前提**：GitHub 官方 runner 机房主要在海外，抖音对海外 IP 风控较严，更容易触发"安全验证/操作频繁"。这套方案能把流程跑通，但成功率取决于 IP；如果频繁被拦截，建议考虑配置 `DS_PROXY` 代理，或改用国内服务器/本地定时任务。
+
+### 一、准备（只需做一次）
+
+本机运行一次下面的命令，把你在网页里已配置好的账号与登录态整理到 `ci/` 目录：
+
+```bash
+python tools/prepare_ci.py
+```
+
+这会生成：
+- `ci/config.json`：各账号配置（好友、消息、偏移分钟、好友间隔）；
+- `ci/state/<账号ID>.json`：登录态文件。
+
+> 🔒 **安全提示**：登录态包含账号会话 Cookie，**仓库必须设为 Private**。如果你担心仓库以后变公开，可用 `python tools/prepare_ci.py --encrypt` 把登录态加密（需在仓库 Secrets 中设置 `DS_STATE_PASSPHRASE` 口令），然后只上传 `.enc` 文件。
+
+### 二、上传到 GitHub
+
+把以下目录提交到你的 GitHub 仓库（例如 `https://github.com/gaoshibo56-gif/douyin-spark-xiaogui`）：
+
+```
+ci/                    ← 登录态与配置（会提交，仓库务必 Private）
+.github/workflows/spark.yml  ← 定时任务配置
+tools/prepare_ci.py    ← 本机整理脚本
+```
+
+### 三、开启定时任务
+
+1. 进入 GitHub 仓库 → **Actions** 页面 → 找到 `抖音续火花 · 云端定时` 工作流 → **Enable workflow**。
+2. 每天会在北京时间 21:00 左右自动运行一次，全部启用的账号会按偏移分钟依次发送。
+3. 你也可以随时手动触发：Actions → `Run workflow` → 填账号ID / 勾选干跑 → **Run workflow**。
+4. 运行结果会显示在 Actions 的步骤摘要里；若任务失败（如登录态过期、限流），GitHub 会自动给你发邮件通知。
+
+### 四、登录态过期怎么办？
+
+登录态过期时，Action 运行会失败并标红：
+1. 本机重新运行 `python extract_cookie.py` 导出新的登录态文件；
+2. 替换 `ci/state/<账号ID>.json`；
+3. 提交并推送到 GitHub，下次定时运行即可恢复。
+
+---
+
 ## 部署进阶：域名 + HTTPS
 
 如果你的域名已解析到服务器（假设为 `douyin.example.com`）：

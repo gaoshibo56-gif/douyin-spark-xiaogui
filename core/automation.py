@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
 import time
 from datetime import datetime
@@ -30,6 +31,21 @@ from .lock import ProcessLock
 logger = logging.getLogger("douyin-spark")
 
 CHAT_URL = "https://www.douyin.com/chat"
+
+
+def _launch_args() -> list[str]:
+    """浏览器启动参数；可通过 DS_PROXY 环境变量走代理（云端被风控时可用）。"""
+    args = [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+    ]
+    proxy = os.environ.get("DS_PROXY", "").strip()
+    if proxy:
+        args.append(f"--proxy-server={proxy}")
+    return args
+
 
 RATE_LIMIT_KEYWORDS = [
     "操作频繁",
@@ -301,12 +317,7 @@ def _with_chat_page(account_id: str, cfg: dict, job: Callable, *, ready_wait: in
         try:
             browser = p.chromium.launch(
                 headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                ],
+                args=_launch_args(),
             )
             context = browser.new_context(
                 storage_state=str(path),
